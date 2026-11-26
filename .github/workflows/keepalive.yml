@@ -1,0 +1,41 @@
+name: keepalive
+
+# Evita que o projeto gratuito do Supabase seja pausado por inatividade (7 dias)
+# e evita que o próprio GitHub desligue este agendamento (60 dias sem atividade no repositório).
+on:
+  schedule:
+    - cron: '17 11 * * *'   # todo dia, 11:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Ping no Supabase
+        env:
+          SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ vars.SUPABASE_KEY }}
+        run: |
+          test -n "$SUPABASE_URL" -a -n "$SUPABASE_KEY" || { echo "Defina as variáveis SUPABASE_URL e SUPABASE_KEY (Settings > Secrets and variables > Actions > Variables)"; exit 1; }
+          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$SUPABASE_URL/rest/v1/rpc/ping" \
+            -H "apikey: $SUPABASE_KEY" -H "Content-Type: application/json" -d '{}')
+          echo "HTTP $code"
+          test "$code" = "200"
+
+      - name: Commit vazio se o repositório está parado há mais de 45 dias
+        run: |
+          last=$(git log -1 --format=%ct)
+          now=$(date +%s)
+          if [ $(( (now - last) / 86400 )) -ge 45 ]; then
+            git config user.name "keepalive"
+            git config user.email "keepalive@users.noreply.github.com"
+            git commit --allow-empty -m "keepalive: mantém o agendamento ativo"
+            git push
+          fi
