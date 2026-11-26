@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<meta name="referrer" content="no-referrer">
+<title>Briefings · painel</title>
+<style>
+:root{--bg:#F6F6F4;--card:#fff;--ink:#14151A;--muted:#5C6070;--line:#E2E3E8;--accent:#3A4BD6;--accent-ink:#fff;--tint:#E4E8FC;--ok:#1E7A4C;--warn:#9A6200;--bad:#B3261E}
+@media(prefers-color-scheme:dark){:root{--bg:#0F1013;--card:#181A20;--ink:#ECEDF2;--muted:#9AA0B2;--line:#2A2D38;--accent:#9AA6FF;--accent-ink:#0C1030;--tint:#1F2549;--ok:#5FD3A0;--warn:#F0B95A;--bad:#FF8A80}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+main{max-width:860px;margin:0 auto;padding:20px 16px 80px}
+h1{font-size:24px;margin:0 0 4px}h2{font-size:18px;margin:26px 0 8px}h3{font-size:14px;margin:18px 0 4px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em}
+.sub{color:var(--muted);margin:0 0 18px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px;margin-bottom:12px}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+input{font:inherit;min-height:44px;padding:0 12px;border:1px solid var(--line);border-radius:10px;background:var(--bg);color:var(--ink);flex:1;min-width:200px}
+button{font:inherit;min-height:44px;padding:0 16px;border-radius:10px;border:1px solid var(--line);background:var(--card);color:var(--ink);cursor:pointer}
+button.p{background:var(--accent);color:var(--accent-ink);border-color:var(--accent);font-weight:600}
+button.d{color:var(--bad)}
+button:disabled{opacity:.5;cursor:default}
+.item{display:flex;justify-content:space-between;gap:12px;align-items:center;cursor:pointer}
+.item:hover{border-color:var(--accent)}
+.badge{font-size:12px;font-weight:600;padding:3px 9px;border-radius:99px;background:var(--tint);color:var(--accent)}
+.badge.concluido{background:transparent;color:var(--ok);border:1px solid var(--ok)}
+.badge.pendente{background:transparent;color:var(--muted);border:1px solid var(--line)}
+.meta{color:var(--muted);font-size:13px}
+.q{white-space:pre-wrap;margin:0 0 6px}
+.chips span{display:inline-block;background:var(--tint);color:var(--accent);border-radius:99px;padding:3px 11px;margin:0 6px 6px 0;font-size:14px}
+.dots span{display:inline-block;width:22px;height:22px;border-radius:50%;margin-right:6px;border:1px solid var(--line);vertical-align:middle}
+audio{width:100%;margin:4px 0 10px}
+.th{display:grid;grid-template-columns:1fr 90px 1fr;gap:8px;align-items:center;font-size:14px;margin:4px 0}
+.th .tr{height:6px;background:var(--line);border-radius:9px;position:relative}.th .tr i{position:absolute;top:-4px;width:14px;height:14px;border-radius:50%;background:var(--accent);margin-left:-7px}
+.th .r{text-align:right}
+#msg{position:fixed;bottom:16px;left:50%;transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:10px 16px;border-radius:10px;font-size:14px;opacity:0;pointer-events:none;transition:opacity .2s;max-width:90vw}
+#msg.on{opacity:1}
+.link{word-break:break-all;font-size:13px;color:var(--muted)}
+[hidden]{display:none!important}
+</style>
+</head>
+<body>
+<main id="app"></main>
+<div id="msg" role="status"></div>
+<script src="config.js"></script>
+<script>
+(function(){
+'use strict';
+var CFG=window.BRIEFING_CONFIG||{};
+var $=function(s){return document.querySelector(s)};
+var app=$('#app');
+var S={access:null,refresh:null,email:''};
+try{var sv=JSON.parse(localStorage.getItem('briefing_admin')||'null');if(sv)S=sv}catch(e){}
+function saveS(){try{localStorage.setItem('briefing_admin',JSON.stringify(S))}catch(e){}}
+function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
+function msg(t){var m=$('#msg');m.textContent=t;m.classList.add('on');clearTimeout(msg.t);msg.t=setTimeout(function(){m.classList.remove('on')},2800)}
+function fmtD(s){if(!s)return '';var d=new Date(s);return d.toLocaleDateString('pt-BR')+' '+d.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'})}
+function fmtT(s){return Math.floor(s/60)+':'+String(s%60).padStart(2,'0')}
+function slug(s){return String(s).normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/[^a-zA-Z0-9]+/g,'-').replace(/^-|-$/g,'').toLowerCase()||'briefing'}
+var STATUS={pendente:'Não iniciado',em_andamento:'Em andamento',concluido:'Concluído'};
+
+/* ---------- API ---------- */
+function baseHeaders(auth){var h={'apikey':CFG.key};h['Authorization']='Bearer '+(auth||S.access||CFG.key);return h}
+function login(email,pw){
+  return fetch(CFG.url+'/auth/v1/token?grant_type=password',{method:'POST',headers:{'apikey':CFG.key,'Content-Type':'application/json'},body:JSON.stringify({email:email,password:pw})})
+    .then(function(r){return r.json().then(function(j){if(!r.ok)throw new Error(j.error_description||j.msg||'Falha no login');return j})})
+    .then(function(j){S={access:j.access_token,refresh:j.refresh_token,email:email};saveS()});
+}
+function refresh(){
+  if(!S.refresh)return Promise.reject(new Error('sem sessão'));
+  return fetch(CFG.url+'/auth/v1/token?grant_type=refresh_token',{method:'POST',headers:{'apikey':CFG.key,'Content-Type':'application/json'},body:JSON.stringify({refresh_token:S.refresh})})
+    .then(function(r){if(!r.ok)throw new Error('sessão expirada');return r.json()})
+    .then(function(j){S.access=j.access_token;S.refresh=j.refresh_token;saveS()});
+}
+function api(path,opts,retried){
+  opts=opts||{};
+  var h=baseHeaders();for(var k in (opts.headers||{}))h[k]=opts.headers[k];
+  return fetch(CFG.url+path,{method:opts.method||'GET',headers:h,body:opts.body}).then(function(r){
+    if(r.status===401&&!retried){return refresh().then(function(){return api(path,opts,true)})}
+    if(r.status===401){S={};saveS();showLogin();throw new Error('Sessão expirada')}
+    if(!r.ok)return r.text().then(function(t){throw new Error('Erro '+r.status+': '+t.slice(0,200))});
+    return r.text().then(function(t){if(!t)return null;try{return JSON.parse(t)}catch(e){return t}});
+  });
+}
+function json(o){return {headers:{'Content-Type':'application/json'},body:JSON.stringify(o)}}
+function signed(path){
+  return api('/storage/v1/object/sign/audios/'+path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({expiresIn:3600})})
+    .then(function(j){return CFG.url+'/storage/v1'+j.signedURL});
+}
+function fetchBlob(path){return signed(path).then(function(u){return fetch(u)}).then(function(r){if(!r.ok)throw new Error('download '+r.status);return r.blob()})}
+
+/* ---------- telas ---------- */
+function showLogin(err){
+  app.innerHTML='<h1>Painel de briefings</h1><p class="sub">Entre com o e-mail e a senha que você criou no Supabase.</p><div class="card"><div class="row"><input id="em" type="email" placeholder="E-mail" autocomplete="username" value="'+esc(S.email||'')+'"><input id="pw" type="password" placeholder="Senha" autocomplete="current-password"></div><div class="row" style="margin-top:12px"><button class="p" id="go">Entrar</button><span id="err" style="color:var(--bad)">'+esc(err||'')+'</span></div></div>';
+  function go(){
+    var b=$('#go');b.disabled=true;
+    login($('#em').value.trim(),$('#pw').value).then(showList).catch(function(e){showLogin(e.message)});
+  }
+  $('#go').onclick=go;$('#pw').onkeydown=function(e){if(e.key==='Enter')go()};
+}
+function linkFor(token){return location.href.replace(/admin\.html.*$/,'')+'index.html?t='+token}
+function showList(){
+  app.innerHTML='<div class="row" style="justify-content:space-between"><h1>Briefings</h1><button id="out">Sair</button></div><p class="sub">Crie um link por cliente e envie. As respostas aparecem aqui conforme ela preenche.</p>'+
+  '<div class="card"><div class="row"><input id="nc" placeholder="Nome do cliente (só você vê)"><button class="p" id="mk">Criar link</button></div></div>'+
+  '<div id="list"><p class="meta">Carregando…</p></div>'+
+  '<h2>Cópia de segurança</h2><p class="meta">O plano gratuito não tem backup automático. Baixe tudo de vez em quando: um arquivo .zip com textos, dados e áudios de todos os briefings.</p><button id="bk">Baixar tudo (.zip)</button>';
+  $('#out').onclick=function(){S={};saveS();showLogin()};
+  $('#mk').onclick=function(){
+    var n=$('#nc').value.trim();if(!n){msg('Escreva o nome do cliente.');return}
+    api('/rest/v1/briefings',{method:'POST',headers:{'Content-Type':'application/json','Prefer':'return=representation'},body:JSON.stringify({cliente:n})})
+      .then(function(r){navigator.clipboard&&navigator.clipboard.writeText(linkFor(r[0].token)).catch(function(){});msg('Link criado e copiado.');showDetail(r[0].id)})
+      .catch(function(e){msg(e.message)});
+  };
+  $('#bk').onclick=backupAll;
+  api('/rest/v1/briefings?select=id,cliente,status,criado_em,atualizado_em,concluido_em&order=criado_em.desc').then(function(rows){
+    $('#list').innerHTML=rows.length?rows.map(function(r){
+      return '<div class="card item" data-id="'+r.id+'"><div><strong>'+esc(r.cliente)+'</strong><div class="meta">Criado '+fmtD(r.criado_em)+(r.status==='concluido'?' · Concluído '+fmtD(r.concluido_em):r.status==='em_andamento'?' · Última atividade '+fmtD(r.atualizado_em):'')+'</div></div><span class="badge '+r.status+'">'+STATUS[r.status]+'</span></div>';
+    }).join(''):'<p class="meta">Nenhum briefing ainda. Crie o primeiro acima.</p>';
+    Array.prototype.forEach.call(document.querySelectorAll('.item'),function(el){el.onclick=function(){showDetail(el.dataset.id)}});
+  }).catch(function(e){$('#list').innerHTML='<p style="color:var(--bad)">'+esc(e.message)+'</p>'});
+}
+
+/* ---------- leitura das respostas ---------- */
+var OPEN_LABELS=[['motivacao','O que mais preenche'],['feedback_negativo_mais_doloroso','Feedback negativo que mais atingiria'],['trajetoria','Ligação da profissão com a história pessoal'],['o_que_gostaria_de_ver','O que gostaria de ver na marca']];
+function thLines(o){return Object.keys(o||{}).map(function(k){var v=o[k];return {par:k.replace(/_x_/,' × ').replace(/^./,function(c){return c.toUpperCase()}),v:v}})}
+function toText(b){
+  var r=b.respostas||{},L=[];
+  function add(h,t){if(t&&String(t).trim())L.push(h.toUpperCase()+'\n'+t+'\n')}
+  L.push('BRIEFING DE IDENTIDADE VISUAL · '+b.cliente);
+  L.push('Status: '+STATUS[b.status]+(b.concluido_em?' em '+fmtD(b.concluido_em):'')+'\n');
+  if(r.marca)add('Marca',(r.marca.nome||'')+(r.marca.subtitulo?' · '+r.marca.subtitulo:''));
+  var aud=r.respostas_em_audio||{};
+  OPEN_LABELS.forEach(function(p){
+    var t=r[p[0]],a=aud[p[0]];
+    var s=(t||'')+(a?((t?'\n':'')+'[Resposta em áudio de '+fmtT(a.duracao_s)+' · arquivo: '+(a.arquivo||'').split('/').pop()+']'):'');
+    add(p[1],s);
+  });
+  add('Sensações que a marca deve passar',(r.sensacoes||[]).join(', '));
+  add('Palavras escritas por ela',(r.palavras_proprias||[]).join(', '));
+  add('Tom confirmado',r.tom_confirmado);
+  if(r.publico)add('Público',((r.publico.perfis||[]).join(', ')+(r.publico.descricao?'\n'+r.publico.descricao:'')));
+  var th=thLines(r.termometro_estilo).concat(thLines(r.termometro_cores)).map(function(x){return x.par+': '+(x.v?x.v.leitura+' ('+x.v.valor+'/5)':'sem resposta')});
+  add('Termômetros',th.join('\n'));
+  add('Cores que gosta',((r.cores||{}).gosta||[]).join(', '));
+  add('Nunca',(r.nunca||[]).join(', '));
+  add('Restrições (texto)',r.restricoes_texto);
+  if(r.referencias)add('Referências',(r.referencias.da_area?'Da área: '+r.referencias.da_area+'\n':'')+(r.referencias.de_qualquer_area?'De outra área: '+r.referencias.de_qualquer_area:''));
+  add('Aparece primeiro em',(r.aparece_primeiro_em||[]).join(', '));
+  add('Ficou em aberto',(r.em_aberto||[]).join('; '));
+  return L.join('\n');
+}
+function showDetail(id){
+  app.innerHTML='<p class="meta">Carregando…</p>';
+  api('/rest/v1/briefings?id=eq.'+id+'&select=*').then(function(rows){
+    var b=rows[0];if(!b){showList();return}
+    var r=b.respostas||{},aud=r.respostas_em_audio||{};
+    var h='<div class="row" style="justify-content:space-between"><button id="bk">← Voltar</button><span class="badge '+b.status+'">'+STATUS[b.status]+'</span></div>'+
+    '<h1 style="margin-top:14px">'+esc(b.cliente)+'</h1><p class="meta">Criado '+fmtD(b.criado_em)+' · Última atividade '+fmtD(b.atualizado_em)+(b.concluido_em?' · Concluído '+fmtD(b.concluido_em):'')+'</p>'+
+    '<div class="card"><div class="meta">Link do cliente</div><div class="link" id="lk">'+esc(linkFor(b.token))+'</div><div class="row" style="margin-top:10px"><button class="p" id="cl">Copiar link</button><button id="ct">Copiar respostas como texto</button><button id="dl">Baixar (.zip)</button></div></div>';
+    if(b.status==='pendente'){h+='<p class="meta">Ela ainda não abriu o link.</p>'}
+    else{
+      h+='<h2>Respostas</h2>';
+      if(r.marca)h+='<h3>Marca</h3><p class="q">'+esc(r.marca.nome||'')+(r.marca.subtitulo?' · '+esc(r.marca.subtitulo):'')+'</p>';
+      OPEN_LABELS.forEach(function(p){
+        var t=r[p[0]],a=aud[p[0]];if(!t&&!a)return;
+        h+='<h3>'+p[1]+'</h3>'+(t?'<p class="q">'+esc(t)+'</p>':'')+(a?'<div data-audio="'+esc(a.arquivo||'')+'" data-name="'+esc(p[0])+'"><span class="meta">Áudio de '+fmtT(a.duracao_s)+' · carregando…</span></div>':'');
+      });
+      if((r.sensacoes||[]).length)h+='<h3>Sensações</h3><div class="chips">'+r.sensacoes.map(function(w){return '<span>'+esc(w)+'</span>'}).join('')+'</div>';
+      if(r.tom_confirmado)h+='<h3>Tom</h3><p class="q">'+esc(r.tom_confirmado)+'</p>';
+      if(r.publico&&((r.publico.perfis||[]).length||r.publico.descricao))h+='<h3>Público</h3><p class="q">'+esc((r.publico.perfis||[]).join(', '))+(r.publico.descricao?'\n'+esc(r.publico.descricao):'')+'</p>';
+      var ths=thLines(r.termometro_estilo).concat(thLines(r.termometro_cores));
+      if(ths.length)h+='<h3>Termômetros</h3>'+ths.map(function(x){var p=x.par.split(' × ');return '<div class="th"><span>'+esc(p[0])+'</span><div class="tr">'+(x.v?'<i style="left:'+((x.v.valor-1)*25)+'%"></i>':'')+'</div><span class="r">'+esc(p[1]||'')+'</span></div>'}).join('');
+      var cores=(r.cores||{}).gosta||[];if(cores.length)h+='<h3>Cores que gosta</h3><p class="q">'+esc(cores.join(', '))+'</p>';
+      if((r.nunca||[]).length)h+='<h3>Nunca</h3><p class="q">'+esc(r.nunca.join(', '))+'</p>';
+      if(r.restricoes_texto)h+='<h3>Restrições</h3><p class="q">'+esc(r.restricoes_texto)+'</p>';
+      if(r.referencias&&(r.referencias.da_area||r.referencias.de_qualquer_area))h+='<h3>Referências</h3>'+(r.referencias.da_area?'<p class="q">Da área: '+esc(r.referencias.da_area)+'</p>':'')+(r.referencias.de_qualquer_area?'<p class="q">De outra área: '+esc(r.referencias.de_qualquer_area)+'</p>':'');
+      if((r.aparece_primeiro_em||[]).length)h+='<h3>Aparece primeiro em</h3><p class="q">'+esc(r.aparece_primeiro_em.join(', '))+'</p>';
+      if((r.em_aberto||[]).length)h+='<h3>Ficou em aberto</h3><p class="q">'+esc(r.em_aberto.join('; '))+'</p>';
+    }
+    h+='<h2>Ações</h2><div class="row">'+(b.status==='concluido'?'<button id="ro">Reabrir para ela editar</button>':'')+'<button class="d" id="rm">Excluir briefing e áudios</button></div>';
+    app.innerHTML=h;
+    $('#bk').onclick=showList;
+    $('#cl').onclick=function(){navigator.clipboard.writeText(linkFor(b.token)).then(function(){msg('Link copiado.')},function(){msg('Copie manualmente o link acima.')})};
+    $('#ct').onclick=function(){navigator.clipboard.writeText(toText(b)).then(function(){msg('Texto copiado.')},function(){msg('Não consegui copiar. Use o .zip.')})};
+    $('#dl').onclick=function(){downloadOne(b)};
+    if($('#ro'))$('#ro').onclick=function(){api('/rest/v1/briefings?id=eq.'+id,Object.assign({method:'PATCH'},json({status:'em_andamento',concluido_em:null}))).then(function(){msg('Reaberto.');showDetail(id)}).catch(function(e){msg(e.message)})};
+    $('#rm').onclick=function(){
+      if(!confirm('Excluir "'+b.cliente+'" e todos os áudios? Não dá para desfazer.'))return;
+      removeAll(b).then(function(){msg('Excluído.');showList()}).catch(function(e){msg(e.message)});
+    };
+    Array.prototype.forEach.call(document.querySelectorAll('[data-audio]'),function(el){
+      var p=el.dataset.audio;if(!p){el.innerHTML='<span class="meta">Áudio ainda não enviado.</span>';return}
+      signed(p).then(function(u){el.innerHTML='<audio controls preload="none" src="'+u+'"></audio>'}).catch(function(){el.innerHTML='<span class="meta">Não consegui carregar o áudio.</span>'});
+    });
+  }).catch(function(e){app.innerHTML='<p style="color:var(--bad)">'+esc(e.message)+'</p><button id="bk">Voltar</button>';$('#bk').onclick=showList});
+}
+function removeAll(b){
+  return api('/storage/v1/object/list/audios',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prefix:b.token,limit:200})}).then(function(files){
+    var paths=(files||[]).map(function(f){return b.token+'/'+f.name});
+    if(!paths.length)return;
+    return api('/storage/v1/object/audios',{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({prefixes:paths})});
+  }).then(function(){return api('/rest/v1/briefings?id=eq.'+b.id,{method:'DELETE'})});
+}
+
+/* ---------- zip simples (sem compressão) ---------- */
+var CRC=(function(){var t=[];for(var n=0;n<256;n++){var c=n;for(var k=0;k<8;k++)c=c&1?0xEDB88320^(c>>>1):c>>>1;t[n]=c>>>0}return t})();
+function crc32(u){var c=0xFFFFFFFF;for(var i=0;i<u.length;i++)c=CRC[(c^u[i])&255]^(c>>>8);return (c^0xFFFFFFFF)>>>0}
+function makeZip(files){ // files: [{name, data:Uint8Array}]
+  var enc=new TextEncoder(),parts=[],central=[],offset=0,now=new Date();
+  var dt=((now.getFullYear()-1980)<<9)|((now.getMonth()+1)<<5)|now.getDate(),tm=(now.getHours()<<11)|(now.getMinutes()<<5)|(now.getSeconds()>>1);
+  files.forEach(function(f){
+    var name=enc.encode(f.name),crc=crc32(f.data),sz=f.data.length;
+    var lh=new DataView(new ArrayBuffer(30));
+    lh.setUint32(0,0x04034b50,true);lh.setUint16(4,20,true);lh.setUint16(6,0x0800,true);lh.setUint16(8,0,true);lh.setUint16(10,tm,true);lh.setUint16(12,dt,true);
+    lh.setUint32(14,crc,true);lh.setUint32(18,sz,true);lh.setUint32(22,sz,true);lh.setUint16(26,name.length,true);lh.setUint16(28,0,true);
+    parts.push(new Uint8Array(lh.buffer),name,f.data);
+    var ch=new DataView(new ArrayBuffer(46));
+    ch.setUint32(0,0x02014b50,true);ch.setUint16(4,20,true);ch.setUint16(6,20,true);ch.setUint16(8,0x0800,true);ch.setUint16(10,0,true);ch.setUint16(12,tm,true);ch.setUint16(14,dt,true);
+    ch.setUint32(16,crc,true);ch.setUint32(20,sz,true);ch.setUint32(24,sz,true);ch.setUint16(28,name.length,true);ch.setUint32(42,offset,true);
+    central.push(new Uint8Array(ch.buffer),name);
+    offset+=30+name.length+sz;
+  });
+  var cdSize=central.reduce(function(a,p){return a+p.length},0);
+  var end=new DataView(new ArrayBuffer(22));
+  end.setUint32(0,0x06054b50,true);end.setUint16(8,files.length,true);end.setUint16(10,files.length,true);end.setUint32(12,cdSize,true);end.setUint32(16,offset,true);
+  return new Blob(parts.concat(central,[new Uint8Array(end.buffer)]),{type:'application/zip'});
+}
+function save(blob,name){var a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=name;document.body.appendChild(a);a.click();setTimeout(function(){URL.revokeObjectURL(a.href);a.remove()},1500)}
+function filesFor(b,prefix){
+  var enc=new TextEncoder(),out=[];
+  out.push({name:prefix+'respostas.txt',data:enc.encode(toText(b))});
+  out.push({name:prefix+'dados.json',data:enc.encode(JSON.stringify({cliente:b.cliente,status:b.status,criado_em:b.criado_em,concluido_em:b.concluido_em,respostas:b.respostas},null,2))});
+  var aud=(b.respostas||{}).respostas_em_audio||{};
+  return Promise.all(Object.keys(aud).map(function(k){
+    var p=aud[k].arquivo;if(!p)return null;
+    return fetchBlob(p).then(function(bl){return bl.arrayBuffer()}).then(function(buf){
+      out.push({name:prefix+'audio-'+k+'.'+p.split('.').pop(),data:new Uint8Array(buf)});
+    }).catch(function(){out.push({name:prefix+'audio-'+k+'-ERRO.txt',data:enc.encode('Não consegui baixar este áudio: '+p)})});
+  })).then(function(){return out});
+}
+function downloadOne(b){
+  msg('Preparando…');
+  filesFor(b,'').then(function(f){save(makeZip(f),slug(b.cliente)+'.zip');msg('Pronto.')}).catch(function(e){msg(e.message)});
+}
+function backupAll(){
+  msg('Preparando a cópia. Pode levar um pouco.');
+  api('/rest/v1/briefings?select=*&order=criado_em.asc').then(function(rows){
+    var all=[],chain=Promise.resolve();
+    rows.forEach(function(b,i){chain=chain.then(function(){return filesFor(b,String(i+1).padStart(2,'0')+'-'+slug(b.cliente)+'/').then(function(f){all=all.concat(f)})})});
+    return chain.then(function(){save(makeZip(all),'briefings-backup-'+new Date().toISOString().slice(0,10)+'.zip');msg('Cópia baixada.')});
+  }).catch(function(e){msg(e.message)});
+}
+
+/* ---------- início ---------- */
+if(!CFG.url||!CFG.key){app.innerHTML='<h1>Falta configurar</h1><p class="sub">Preencha url e key em config.js (veja o README).</p>'}
+else if(S.access){showList()}
+else showLogin();
+})();
+</script>
+</body>
+</html>
